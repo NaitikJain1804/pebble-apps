@@ -1,15 +1,70 @@
-// Host-side Poco stand-in: rasterises the real planets.js scene to a PNG, so
-// the watchface can be eyeballed without an SDK or emulator.
+// Host-side Poco stand-in: runs the real planets.js layout against the real
+// bitmap resources and writes a PNG, so the watchface can be eyeballed without
+// an SDK or emulator.
 //
 //   node tools/preview.mjs <hour> <minute> <second> <out.png>
 //
-// The primitives here match Poco's: integer coordinates, filled discs, no
-// antialiasing. Area outside the round bezel is tinted so clipping shows up.
-import { writeFileSync } from "node:fs";
-import { deflateSync } from "node:zlib";
-import { makePalette, drawScene } from "../src/embeddedjs/planets.js";
+// Poco semantics are mirrored: integer coordinates, no antialiasing, bitmaps
+// blitted opaquely. Area outside the round bezel is tinted so clipping shows.
+import { readFileSync, writeFileSync } from "node:fs";
+import { deflateSync, inflateSync } from "node:zlib";
+import { loadBodies, drawScene } from "../src/embeddedjs/planets.js";
 
 const W = 260, H = 260;
+const IMG_DIR = new URL("../resources/img/", import.meta.url);
+const RESOURCES = ["sun.png", "mercury.png", "venus.png", "earth.png"];
+
+// --- minimal PNG decode (8-bit truecolour, the format render_bodies emits) ---
+
+function readPNG(path) {
+    const buf = readFileSync(path);
+    let pos = 8, width = 0, height = 0, colorType = 0;
+    const idat = [];
+    while (pos < buf.length) {
+        const len = buf.readUInt32BE(pos);
+        const type = buf.toString("ascii", pos + 4, pos + 8);
+        const data = buf.subarray(pos + 8, pos + 8 + len);
+        if (type === "IHDR") {
+            width = data.readUInt32BE(0);
+            height = data.readUInt32BE(4);
+            colorType = data[9];
+            if (data[8] !== 8 || (colorType !== 2 && colorType !== 6)) {
+                throw new Error(`${path}: expected 8-bit RGB/RGBA PNG`);
+            }
+        } else if (type === "IDAT") {
+            idat.push(data);
+        } else if (type === "IEND") {
+            break;
+        }
+        pos += 12 + len;
+    }
+    const bpp = colorType === 6 ? 4 : 3;
+    const raw = inflateSync(Buffer.concat(idat));
+    const stride = width * bpp;
+    const out = Buffer.alloc(height * stride);
+    for (let y = 0; y < height; y++) {
+        const filter = raw[y * (stride + 1)];
+        const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+        for (let i = 0; i < stride; i++) {
+            const a = i >= bpp ? out[y * stride + i - bpp] : 0;
+            const b = y > 0 ? out[(y - 1) * stride + i] : 0;
+            const c = i >= bpp && y > 0 ? out[(y - 1) * stride + i - bpp] : 0;
+            let v = line[i];
+            if (filter === 1) v += a;
+            else if (filter === 2) v += b;
+            else if (filter === 3) v += (a + b) >> 1;
+            else if (filter === 4) {
+                const p = a + b - c;
+                const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+                v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+            }
+            out[y * stride + i] = v & 0xff;
+        }
+    }
+    return { width, height, bpp, data: out };
+}
+
+// --- Poco stand-in ----------------------------------------------------------
 
 class FakePoco {
     constructor() {
@@ -28,26 +83,25 @@ class FakePoco {
     fillRectangle(c, x, y, w, h) {
         for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) this.px(i, j, c);
     }
-    drawCircle(c, cx, cy, r) {
-        if (r < 0) return;
-        const r2 = r * r;
-        for (let j = cy - r; j <= cy + r; j++) {
-            for (let i = cx - r; i <= cx + r; i++) {
-                const dx = i - cx, dy = j - cy;
-                if (dx * dx + dy * dy <= r2) this.px(i, j, c);
+    drawBitmap(bmp, x, y) {
+        const { width, height, bpp, data } = bmp;
+        for (let j = 0; j < height; j++) {
+            for (let i = 0; i < width; i++) {
+                const s = (j * width + i) * bpp;
+                this.px(x + i, y + j, [data[s], data[s + 1], data[s + 2]]);
             }
         }
     }
-    drawLine(x1, y1, x2, y2, c, thickness = 1) {
-        const t = Math.max(1, thickness | 0);
-        const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
-        for (let s = 0; s <= steps; s++) {
-            const x = Math.round(x1 + ((x2 - x1) * s) / steps);
-            const y = Math.round(y1 + ((y2 - y1) * s) / steps);
-            for (let o = 0; o < t; o++) this.px(x, y - ((t - 1) >> 1) + o, c);
-        }
-    }
 }
+
+// Stands in for Poco.PebbleBitmap(resourceId), 1-based into resources.media.
+const PocoShim = {
+    PebbleBitmap: class {
+        constructor(id) {
+            return readPNG(new URL(RESOURCES[id - 1], IMG_DIR));
+        }
+    },
+};
 
 // Mask off the corners the round bezel hides, so clipping shows up in preview.
 function maskRound(p) {
@@ -61,8 +115,8 @@ function maskRound(p) {
     }
 }
 
-// Minimal PNG encoder: scale up with nearest-neighbour, then one deflated
-// IDAT of filter-0 scanlines.
+// --- PNG encode -------------------------------------------------------------
+
 function writePNG(path, buf, scale) {
     const w = W * scale, h = H * scale;
     const raw = Buffer.alloc(h * (w * 3 + 1));
@@ -112,6 +166,7 @@ function crc32(b) {
 
 const [hh, mm, ss, out] = process.argv.slice(2);
 const render = new FakePoco();
-drawScene(render, makePalette(render), new Date(2026, 0, 1, +hh, +mm, +ss));
+drawScene(render, render.makeColor(0, 0, 0), loadBodies(PocoShim),
+    new Date(2026, 0, 1, +hh, +mm, +ss));
 maskRound(render);
 writePNG(out ?? "preview.png", render.buf, 2);

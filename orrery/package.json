@@ -14,6 +14,13 @@
     "targetPlatforms": ["gabbro"],
     "watchapp": { "watchface": true },
     "messageKeys": [],
-    "resources": { "media": [] }
+    "resources": {
+      "media": [
+        { "type": "bitmap", "name": "IMAGE_SUN", "file": "img/sun.png" },
+        { "type": "bitmap", "name": "IMAGE_MERCURY", "file": "img/mercury.png" },
+        { "type": "bitmap", "name": "IMAGE_VENUS", "file": "img/venus.png" },
+        { "type": "bitmap", "name": "IMAGE_EARTH", "file": "img/earth.png" }
+      ]
+    }
   }
 }

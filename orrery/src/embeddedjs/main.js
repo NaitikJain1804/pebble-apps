@@ -4,13 +4,14 @@
 // the centre of a black sky.
 
 import Poco from "commodetto/Poco";
-import { makePalette, drawScene } from "planets";
+import { loadBodies, drawScene } from "planets";
 
 const render = new Poco(screen);
-const palette = makePalette(render);
+const black = render.makeColor(0, 0, 0);
+const bodies = loadBodies(Poco);
 
 function tick() {
-    drawScene(render, palette, new Date());
+    drawScene(render, black, bodies, new Date());
 }
 
 tick();
