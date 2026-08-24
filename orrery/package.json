@@ -1,0 +1,19 @@
+{
+  "name": "orrery",
+  "author": "Naitik Jain",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Orrery",
+    "uuid": "0d82dc5d-6da6-4ed4-8cb8-76b09de557f2",
+    "projectType": "moddable",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": ["gabbro"],
+    "watchapp": { "watchface": true },
+    "messageKeys": [],
+    "resources": { "media": [] }
+  }
+}
