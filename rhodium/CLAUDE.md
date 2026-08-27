@@ -1,8 +1,8 @@
 # Rhodium
 
 An analogue watchface whose hands spell out the time they point at. At 11:18 the
-hour hand points at the 11 baton and carries **11** engraved along it; the minute
-hand points at 18 and carries **18**.
+hour hand points at the 11 baton and carries **ELEVEN** engraved along it; the
+minute hand points at 18 and carries **EIGHTEEN**.
 
 Salmon dial (`GColorMelon`), rhodium-plated hands and applied hour batons.
 
@@ -37,16 +37,22 @@ a constant on the round platforms, a ray/rectangle intersection on the
 rectangular ones. Markers and ticks therefore sit along the case on every
 Pebble, instead of on a circle inscribed in a rectangle.
 
-## Rotated numerals
+## Rotated lettering
 
-The SDK draws text upright only, so the numbers cannot be system-font text if
-they are to run along the hands. Each digit is a stroked outline on a small
-grid (`DIGIT_0`..`DIGIT_9`), drawn as line segments transformed through the
-hand's own rotated frame. Digits are flipped end for end on the left half of
-the dial so they never read upside down.
+The time is spelled out — ELEVEN, EIGHTEEN, TWENTY THREE — not written in
+digits. The SDK draws text upright only, so the words cannot be system-font
+text if they are to run along the hands. Each letter is a stroked outline on a
+small grid (`GLYPH_E`..`GLYPH_Z`; only the seventeen letters that spell numbers
+exist), drawn as line segments transformed through the hand's own rotated frame,
+always at a one-pixel stroke — anything heavier closes the counters at this size.
 
-The hand width is therefore driven by the numerals: `numeral_h = hand_w - 5`.
-Narrowing `G_HAND_W` shrinks the numbers with it.
+Readability comes from the flip: on the left half of the dial the word is turned
+end for end, so the letters stand up rather than reading upside down, and the
+word always reads left to right. A word longer than the space left on the hand
+is nudged inboard rather than running off the tip.
+
+The hand width is driven by the lettering (`letter_h = hand_w - 2`), so
+narrowing `G_HAND_W` shrinks the words with it.
 
 ## Two design decisions worth knowing
 
@@ -54,8 +60,8 @@ Narrowing `G_HAND_W` shrinks the numbers with it.
 next hour; here it would then read "11" while sitting almost on the 12. Snapping
 keeps hand and numeral in agreement, which is the point of the face.
 
-**Bodies first, then both numbers.** When the hands align the minute hand covers
-the hour hand, so the hour numeral is drawn last, on top of whatever it lands
+**Bodies first, then both words.** When the hands align the minute hand covers
+the hour hand, so the hour word is drawn last, on top of whatever it lands
 on. It stays readable because both hands are the same metal.
 
 ## Proportions
@@ -73,7 +79,7 @@ layout is checked host-side:
 python3 tools/preview.py 11 18 preview   # needs pillow; one PNG per platform
 ```
 
-It parses the geometry constants and the digit outlines out of `main.c` — those
+It parses the geometry constants and the letter outlines and number words out of `main.c` — those
 cannot drift — but mirrors the drawing order and the formulas by hand. A design
 check for shape, fit and colour; the emulator is still the authority. Committed
 PNGs in `preview/` show 11:18 on every platform, with the area outside a round

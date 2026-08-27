@@ -24,7 +24,7 @@
   #define COLOR_METAL_LIT GColorWhite        // ... and where it catches the light
   #define COLOR_METAL_CUT GColorDarkGray     // outline, engraving
   #define COLOR_TRACK     GColorDarkGray     // minute hairlines
-  #define COLOR_ENGRAVE   GColorBlack        // the numerals cut into the hands
+  #define COLOR_ENGRAVE   GColorBlack        // the lettering cut into the hands
 #else
   #define COLOR_DIAL      GColorWhite
   #define COLOR_SHADOW    GColorBlack
@@ -46,8 +46,8 @@
 // GEOMETRY_BEGIN (tools/preview.py parses these)
 #define G_MINUTE_LEN   80  // % of R
 #define G_HOUR_LEN     52
-#define G_HAND_W       18
-#define G_HAND_W_MIN   13  // px
+#define G_HAND_W       10
+#define G_HAND_W_MIN    9  // px
 #define G_HAND_TAIL     9  // % of R, the counterweight behind the centre
 #define G_BATON_LEN    15
 #define G_BATON_W       6
@@ -57,8 +57,8 @@
 #define G_TICK_LEN_MIN  3  // px
 #define G_TICK_INSET    3
 #define G_TICK_IN_MIN   2  // px
-#define G_TEXT_POS     62  // % of hand length
-#define G_DIGIT_GAP     2  // px
+#define G_TEXT_POS     58  // % of hand length, where the word sits
+#define G_LETTER_GAP    1  // px
 // GEOMETRY_END
 
 #define PCT(value, pct) (((value) * (pct)) / 100)
@@ -68,38 +68,87 @@ static int at_least(int value, int floor) {
 }
 
 // ---------------------------------------------------------------------------
-// Numerals
+// Lettering
 //
-// The numbers rotate with their hand, so they cannot be system-font text — the
-// SDK only draws text upright. Each digit is a stroked outline on a 10x16 grid,
-// drawn as line segments through the hand's own rotated frame. Format per
-// digit: a stroke length, that many x,y pairs, repeated, terminated by 0.
+// The words rotate with their hand, so they cannot be system-font text — the
+// SDK only draws text upright. Each letter is a stroked outline on a grid of
+// x 1..7 by y 3..15, drawn as line segments through the hand's own rotated
+// frame. Format: a stroke length, that many x,y pairs, repeated, then 0.
+//
+// Only the seventeen letters that spell out numbers are here.
 // ---------------------------------------------------------------------------
 
-// DIGITS_BEGIN (tools/preview.py parses these)
-static const int8_t DIGIT_0[] = {11, 2,4, 1,7, 1,11, 2,14, 5,15, 8,14, 9,11, 9,7, 8,4, 5,3, 2,4, 0};
-static const int8_t DIGIT_1[] = {3, 1,6, 5,3, 5,15, 0};
-static const int8_t DIGIT_2[] = {9, 1,6, 2,4, 5,3, 8,4, 9,7, 8,10, 2,14, 1,15, 9,15, 0};
-static const int8_t DIGIT_3[] = {11, 1,5, 3,3, 7,3, 9,5, 8,8, 5,9, 8,10, 9,12, 7,15, 3,15, 1,13, 0};
-static const int8_t DIGIT_4[] = {3, 8,3, 1,12, 9,12, 2, 8,3, 8,15, 0};
-static const int8_t DIGIT_5[] = {9, 8,3, 2,3, 2,8, 5,7, 8,9, 9,12, 7,15, 3,15, 1,13, 0};
-static const int8_t DIGIT_6[] = {12, 8,4, 5,3, 2,5, 1,9, 1,12, 3,15, 6,15, 8,13, 8,11, 6,9, 3,9, 1,11, 0};
-static const int8_t DIGIT_7[] = {3, 1,3, 9,3, 4,15, 0};
-static const int8_t DIGIT_8[] = {7, 5,3, 2,4, 2,7, 5,9, 8,7, 8,4, 5,3, 7, 5,9, 2,11, 2,14, 5,15, 8,14, 8,11, 5,9, 0};
-static const int8_t DIGIT_9[] = {12, 2,14, 5,15, 8,13, 9,9, 9,6, 7,3, 4,3, 2,5, 2,7, 4,9, 7,9, 9,7, 0};
-// DIGITS_END
+// GLYPHS_BEGIN (tools/preview.py parses these)
+static const int8_t GLYPH_E[] = {4, 7,3, 1,3, 1,15, 7,15, 2, 1,9, 5,9, 0};
+static const int8_t GLYPH_F[] = {3, 7,3, 1,3, 1,15, 2, 1,9, 5,9, 0};
+static const int8_t GLYPH_G[] = {9, 7,5, 4,3, 2,5, 1,9, 2,13, 4,15, 6,14, 7,11, 4,11, 0};
+static const int8_t GLYPH_H[] = {2, 1,3, 1,15, 2, 7,3, 7,15, 2, 1,9, 7,9, 0};
+static const int8_t GLYPH_I[] = {2, 1,3, 7,3, 2, 4,3, 4,15, 2, 1,15, 7,15, 0};
+static const int8_t GLYPH_L[] = {3, 1,3, 1,15, 7,15, 0};
+static const int8_t GLYPH_N[] = {4, 1,15, 1,3, 7,15, 7,3, 0};
+static const int8_t GLYPH_O[] = {7, 4,3, 1,6, 1,12, 4,15, 7,12, 7,6, 4,3, 0};
+static const int8_t GLYPH_R[] = {6, 1,15, 1,3, 5,3, 7,5, 5,8, 1,8, 2, 4,8, 7,15, 0};
+static const int8_t GLYPH_S[] = {8, 7,4, 4,3, 2,4, 2,7, 6,10, 6,13, 4,15, 1,14, 0};
+static const int8_t GLYPH_T[] = {2, 1,3, 7,3, 2, 4,3, 4,15, 0};
+static const int8_t GLYPH_U[] = {5, 1,3, 1,12, 4,15, 7,12, 7,3, 0};
+static const int8_t GLYPH_V[] = {3, 1,3, 4,15, 7,3, 0};
+static const int8_t GLYPH_W[] = {5, 1,3, 2,15, 4,8, 6,15, 7,3, 0};
+static const int8_t GLYPH_X[] = {2, 1,3, 7,15, 2, 7,3, 1,15, 0};
+static const int8_t GLYPH_Y[] = {3, 1,3, 4,9, 7,3, 2, 4,9, 4,15, 0};
+static const int8_t GLYPH_Z[] = {4, 1,3, 7,3, 1,15, 7,15, 0};
+// GLYPHS_END
 
-static const int8_t *const DIGITS[10] = {
-  DIGIT_0, DIGIT_1, DIGIT_2, DIGIT_3, DIGIT_4,
-  DIGIT_5, DIGIT_6, DIGIT_7, DIGIT_8, DIGIT_9,
+// The strokes occupy x 1..7 and y 3..15; mapping from those bounds rather than
+// the whole grid makes the letters fill the height they are given.
+#define GLYPH_X0 1
+#define GLYPH_Y0 3
+#define GLYPH_W_UNITS 6
+#define GLYPH_H_UNITS 12
+
+static const int8_t *glyph(char c) {
+  switch (c) {
+    case 'E': return GLYPH_E;
+    case 'F': return GLYPH_F;
+    case 'G': return GLYPH_G;
+    case 'H': return GLYPH_H;
+    case 'I': return GLYPH_I;
+    case 'L': return GLYPH_L;
+    case 'N': return GLYPH_N;
+    case 'O': return GLYPH_O;
+    case 'R': return GLYPH_R;
+    case 'S': return GLYPH_S;
+    case 'T': return GLYPH_T;
+    case 'U': return GLYPH_U;
+    case 'V': return GLYPH_V;
+    case 'W': return GLYPH_W;
+    case 'X': return GLYPH_X;
+    case 'Y': return GLYPH_Y;
+    case 'Z': return GLYPH_Z;
+    default: return NULL;  // the space between TWENTY and ONE
+  }
+}
+
+// WORDS_BEGIN (tools/preview.py parses these)
+static const char *const UNITS[20] = {
+  "ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT",
+  "NINE", "TEN", "ELEVEN", "TWELVE", "THIRTEEN", "FOURTEEN", "FIFTEEN",
+  "SIXTEEN", "SEVENTEEN", "EIGHTEEN", "NINETEEN",
 };
+static const char *const TENS[6] = {
+  "", "", "TWENTY", "THIRTY", "FORTY", "FIFTY",
+};
+// WORDS_END
 
-// The strokes above occupy x 1..9 and y 3..15 of the grid; mapping from those
-// bounds rather than the whole grid makes the digits fill the numeral height.
-#define DIGIT_X0 1
-#define DIGIT_Y0 3
-#define DIGIT_W_UNITS 8
-#define DIGIT_H_UNITS 12
+// 0..59 spelled out: "EIGHTEEN", "TWENTY THREE", "FORTY".
+static void spell(char *out, size_t size, int value) {
+  if (value < 20) {
+    snprintf(out, size, "%s", UNITS[value]);
+  } else if (value % 10 == 0) {
+    snprintf(out, size, "%s", TENS[value / 10]);
+  } else {
+    snprintf(out, size, "%s %s", TENS[value / 10], UNITS[value % 10]);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -117,7 +166,7 @@ typedef struct {
   int half_h;
   int r;          // the smaller of the two: everything scales off this
   int hand_w;
-  int numeral_h;
+  int letter_h;
   int stroke;     // engraving weight
   int shadow;     // how far the metal floats above the dial
 } Geom;
@@ -286,40 +335,51 @@ static void draw_hand(GContext *ctx, const Geom *g, int32_t angle, int len) {
   draw_applied(ctx, g, g->centre, angle, shape, 5);
 }
 
-// The number engraved along a hand, rotated into the hand's frame. Digits are
-// flipped end for end on the left half of the dial so they never read upside
-// down — the same trick as lettering on a tyre wall.
-static void draw_numerals(GContext *ctx, const Geom *g, int32_t angle, int along,
-                          const char *text) {
-  int digit_w = g->numeral_h * DIGIT_W_UNITS / DIGIT_H_UNITS;
-  int advance = digit_w + G_DIGIT_GAP;
+// The word engraved along a hand, rotated into the hand's frame and flipped
+// end for end on the left half of the dial, so the letters always stand up
+// rather than reading upside down. The word is nudged inboard if it would
+// otherwise run off the tip.
+static void draw_word(GContext *ctx, const Geom *g, int32_t angle, int len,
+                      const char *text) {
+  int letter_w = (g->letter_h * GLYPH_W_UNITS) / GLYPH_H_UNITS;
+  int advance = letter_w + G_LETTER_GAP;
   int count = (int)strlen(text);
-  int start = -(advance * count - G_DIGIT_GAP) / 2;
+  int total = advance * count - G_LETTER_GAP;
+
+  int along = PCT(len, G_TEXT_POS);
+  int furthest = PCT(len, 92) - total / 2;
+  if (along > furthest) {
+    along = furthest;
+  }
+  int start = -total / 2;
   bool flip = sin_lookup(angle) < 0;
 
   GPoint origin = frame_point(g->centre, angle, along, 0);
   graphics_context_set_stroke_color(ctx, COLOR_ENGRAVE);
-  graphics_context_set_stroke_width(ctx, g->stroke);
+  // Hairline lettering: a heavier stroke at this size closes the counters.
+  graphics_context_set_stroke_width(ctx, 1);
 
   for (int i = 0; i < count; i++) {
-    const int8_t *digit = DIGITS[text[i] - '0'];
+    const int8_t *strokes = glyph(text[i]);
+    if (!strokes) {
+      continue;
+    }
     int base = start + i * advance;
-
-    while (*digit) {
-      int points = *digit++;
+    while (*strokes) {
+      int points = *strokes++;
       GPoint previous = GPoint(0, 0);
-      for (int p = 0; p < points; p++) {
+      for (int n = 0; n < points; n++) {
         // Grid to hand frame: x runs along the hand, y across it.
-        int u = base + ((digit[p * 2] - DIGIT_X0) * digit_w) / DIGIT_W_UNITS;
-        int v = ((digit[p * 2 + 1] - DIGIT_Y0) * g->numeral_h) / DIGIT_H_UNITS
-                - g->numeral_h / 2;
+        int u = base + ((strokes[n * 2] - GLYPH_X0) * letter_w) / GLYPH_W_UNITS;
+        int v = ((strokes[n * 2 + 1] - GLYPH_Y0) * g->letter_h) / GLYPH_H_UNITS
+                - g->letter_h / 2;
         GPoint at = frame_point(origin, angle, flip ? -u : u, flip ? v : -v);
-        if (p > 0) {
+        if (n > 0) {
           graphics_draw_line(ctx, previous, at);
         }
         previous = at;
       }
-      digit += points * 2;
+      strokes += points * 2;
     }
   }
 }
@@ -344,31 +404,31 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   g.half_h = bounds.size.h / 2 - 2;
   g.r = (g.half_w < g.half_h) ? g.half_w : g.half_h;
   g.hand_w = at_least(PCT(g.r, G_HAND_W), G_HAND_W_MIN);
-  g.numeral_h = g.hand_w - 5;
+  g.letter_h = g.hand_w - 2;
   g.stroke = (g.r >= 90) ? 2 : 1;
   g.shadow = (g.r >= 110) ? 2 : 1;
 
   draw_dial(ctx, &g, full);
 
-  char hour_text[3];
-  char minute_text[3];
-  snprintf(hour_text, sizeof(hour_text), "%d", s_hour);
-  snprintf(minute_text, sizeof(minute_text), "%02d", s_minute);
+  char hour_text[16];
+  char minute_text[16];
+  spell(hour_text, sizeof(hour_text), s_hour);
+  spell(minute_text, sizeof(minute_text), s_minute);
 
   // Both hands sit exactly on the marker they name: the hour hand on the hour
-  // baton, not part-way to the next one, so hand and numeral always agree.
+  // baton, not part-way to the next one, so hand and word always agree.
   int32_t hour_angle = (s_hour % 12) * TRIG_MAX_ANGLE / 12;
   int32_t minute_angle = s_minute * TRIG_MAX_ANGLE / 60;
   int hour_len = PCT(g.r, G_HOUR_LEN);
   int minute_len = PCT(g.r, G_MINUTE_LEN);
 
-  // Hands, then cap, then both numbers: when the hands line up the minute hand
-  // covers the hour hand, and the hour number has to survive on top of it.
+  // Hands, then cap, then both words: when the hands line up the minute hand
+  // covers the hour hand, and the hour word has to survive on top of it.
   draw_hand(ctx, &g, hour_angle, hour_len);
   draw_hand(ctx, &g, minute_angle, minute_len);
   draw_cap(ctx, &g);
-  draw_numerals(ctx, &g, hour_angle, PCT(hour_len, G_TEXT_POS), hour_text);
-  draw_numerals(ctx, &g, minute_angle, PCT(minute_len, G_TEXT_POS), minute_text);
+  draw_word(ctx, &g, hour_angle, hour_len, hour_text);
+  draw_word(ctx, &g, minute_angle, minute_len, minute_text);
 }
 
 // ---------------------------------------------------------------------------

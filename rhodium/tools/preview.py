@@ -49,7 +49,7 @@ MONO = {
     "ENGRAVE": (0, 0, 0),
 }
 
-DIGIT_X0, DIGIT_Y0, DIGIT_W_UNITS, DIGIT_H_UNITS = 1, 3, 8, 12
+GLYPH_X0, GLYPH_Y0, GLYPH_W_UNITS, GLYPH_H_UNITS = 1, 3, 6, 12
 
 
 def load_source():
@@ -57,17 +57,28 @@ def load_source():
     geom = {m[0]: int(m[1]) for m in re.findall(
         r"#define (G_\w+)\s+(-?\d+)",
         src.split("GEOMETRY_BEGIN")[1].split("GEOMETRY_END")[0])}
-    digits = {}
-    block = src.split("DIGITS_BEGIN")[1].split("DIGITS_END")[0]
-    for name, body in re.findall(r"DIGIT_(\d)\[\] = \{([^}]*)\}", block):
+    glyphs = {}
+    block = src.split("GLYPHS_BEGIN")[1].split("GLYPHS_END")[0]
+    for name, body in re.findall(r"GLYPH_(\w)\[\] = \{([^}]*)\}", block):
         values = [int(v) for v in body.split(",")]
         strokes, i = [], 0
         while values[i]:
             n = values[i]
             strokes.append([(values[i + 1 + 2 * p], values[i + 2 + 2 * p]) for p in range(n)])
             i += 1 + 2 * n
-        digits[int(name)] = strokes
-    return geom, digits
+        glyphs[name] = strokes
+    words = src.split("WORDS_BEGIN")[1].split("WORDS_END")[0]
+    units = re.findall(r'"([A-Z]*)"', words.split("UNITS")[1].split(";")[0])
+    tens = re.findall(r'"([A-Z]*)"', words.split("TENS")[1].split(";")[0])
+    return geom, glyphs, units, tens
+
+
+def spell(value, units, tens):
+    if value < 20:
+        return units[value]
+    if value % 10 == 0:
+        return tens[value // 10]
+    return "%s %s" % (tens[value // 10], units[value % 10])
 
 
 def at_least(v, floor):
@@ -79,10 +90,10 @@ def pct(v, p):
 
 
 class Face:
-    def __init__(self, platform, geom, digits):
+    def __init__(self, platform, geom, glyphs):
         self.w, self.h, self.round, is_color = PLATFORMS[platform]
         self.c = COLOR if is_color else MONO
-        self.g, self.digits = geom, digits
+        self.g, self.glyphs = geom, glyphs
         self.img = Image.new("RGB", (self.w, self.h), self.c["DIAL"])
         self.d = ImageDraw.Draw(self.img)
 
@@ -91,7 +102,7 @@ class Face:
         self.half_h = self.h // 2 - 2
         self.r = min(self.half_w, self.half_h)
         self.hand_w = at_least(pct(self.r, geom["G_HAND_W"]), geom["G_HAND_W_MIN"])
-        self.numeral_h = self.hand_w - 5
+        self.letter_h = self.hand_w - 2
         self.stroke = 2 if self.r >= 90 else 1
         self.shadow = 2 if self.r >= 110 else 1
 
@@ -163,22 +174,26 @@ class Face:
                  (length * 88 // 100, w // 2), (-tail, w // 2)]
         self.applied(self.centre, deg, shape)
 
-    def numerals(self, deg, along, text):
-        digit_w = self.numeral_h * DIGIT_W_UNITS // DIGIT_H_UNITS
-        advance = digit_w + self.g["G_DIGIT_GAP"]
-        start = -(advance * len(text) - self.g["G_DIGIT_GAP"]) // 2
+    def word(self, deg, length, text):
+        letter_w = self.letter_h * GLYPH_W_UNITS // GLYPH_H_UNITS
+        advance = letter_w + self.g["G_LETTER_GAP"]
+        total = advance * len(text) - self.g["G_LETTER_GAP"]
+        along = min(pct(length, self.g["G_TEXT_POS"]), pct(length, 92) - total // 2)
+        start = -total // 2
         flip = sin(radians(deg)) < 0
         origin = self.frame(self.centre, deg, along, 0)
         for i, ch in enumerate(text):
+            if ch not in self.glyphs:
+                continue
             base = start + i * advance
-            for stroke in self.digits[int(ch)]:
+            for stroke in self.glyphs[ch]:
                 pts = []
                 for x, y in stroke:
-                    u = base + (x - DIGIT_X0) * digit_w // DIGIT_W_UNITS
-                    v = ((y - DIGIT_Y0) * self.numeral_h // DIGIT_H_UNITS
-                         - self.numeral_h // 2)
+                    u = base + (x - GLYPH_X0) * letter_w // GLYPH_W_UNITS
+                    v = ((y - GLYPH_Y0) * self.letter_h // GLYPH_H_UNITS
+                         - self.letter_h // 2)
                     pts.append(self.frame(origin, deg, -u if flip else u, v if flip else -v))
-                self.d.line(pts, fill=self.c["ENGRAVE"], width=self.stroke)
+                self.d.line(pts, fill=self.c["ENGRAVE"], width=1)
 
     def cap(self):
         r = self.hand_w // 2 + 1
@@ -188,7 +203,7 @@ class Face:
                                 ((cx - 1, cy - 1), r - 3, "METAL_LIT")):
             self.d.ellipse([x - rr, y - rr, x + rr, y + rr], fill=self.c[col])
 
-    def render(self, hour, minute):
+    def render(self, hour_text, minute_text, hour, minute):
         self.dial()
         hour_len = pct(self.r, self.g["G_HOUR_LEN"])
         minute_len = pct(self.r, self.g["G_MINUTE_LEN"])
@@ -196,8 +211,8 @@ class Face:
         self.hand(ha, hour_len)
         self.hand(ma, minute_len)
         self.cap()
-        self.numerals(ha, pct(hour_len, self.g["G_TEXT_POS"]), str(hour))
-        self.numerals(ma, pct(minute_len, self.g["G_TEXT_POS"]), "%02d" % minute)
+        self.word(ha, hour_len, hour_text)
+        self.word(ma, minute_len, minute_text)
 
         if self.round:  # tint what a round bezel would cut away
             cx, cy = self.centre
@@ -214,10 +229,12 @@ def main():
     minute = int(sys.argv[2]) if len(sys.argv) > 2 else 18
     outdir = Path(sys.argv[3]) if len(sys.argv) > 3 else ROOT / "preview"
     outdir.mkdir(parents=True, exist_ok=True)
-    geom, digits = load_source()
+    geom, glyphs, units, tens = load_source()
+    hour_text = spell(hour, units, tens)
+    minute_text = spell(minute, units, tens)
     for platform in PLATFORMS:
         path = outdir / f"{platform}.png"
-        Face(platform, geom, digits).render(hour, minute).save(path)
+        Face(platform, geom, glyphs).render(hour_text, minute_text, hour, minute).save(path)
         print(path)
 
 
