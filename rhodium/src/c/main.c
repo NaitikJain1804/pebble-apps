@@ -1,11 +1,15 @@
 // Rhodium — an analogue face whose hands spell out the time they point at.
 //
-// The hour hand carries the hour on a pill-shaped plaque near its tip; the
-// minute hand carries the minute. Both numbers stay upright (the SDK cannot
-// rotate text), so the face reads at a glance from any hand position.
+// The hour hand points at the hour marker and carries that number engraved
+// along its length; the minute hand does the same with the minute. At 11:18
+// the hour hand reads 11 and the minute hand reads 18.
 //
-// Salmon dial, rhodium-plated hands. Builds for every Pebble platform; the
-// layout table below picks sizes from the shortest screen dimension.
+// Salmon dial, rhodium-plated hands and applied markers: every metal part is
+// filled in two tones with a warm shadow beneath it, lit consistently from the
+// top left, which is what gives flat 64-colour graphics a machined finish.
+//
+// The dial follows the case: a circle on the round platforms, a rectangle on
+// the rectangular ones, so markers always sit at the edge of the glass.
 
 #include <pebble.h>
 
@@ -14,65 +18,88 @@
 // ---------------------------------------------------------------------------
 
 #ifdef PBL_COLOR
-  #define COLOR_DIAL        GColorMelon        // soft salmon
-  #define COLOR_DIAL_DEEP   GColorSunsetOrange // deeper salmon, chapter ring
-  #define COLOR_METAL       GColorWhite        // polished rhodium
-  #define COLOR_METAL_SHADE GColorLightGray    // bevel, brushed shade
-  #define COLOR_METAL_EDGE  GColorDarkGray     // outline
-  #define COLOR_NUMERAL     GColorBlack        // engraved numerals
-  #define COLOR_TICK        COLOR_METAL        // markers, also rhodium
-  #define COLOR_TICK_EDGE   COLOR_METAL_EDGE
+  #define COLOR_DIAL      GColorMelon        // salmon
+  #define COLOR_SHADOW    GColorSunsetOrange // the dial in shadow, one tone down
+  #define COLOR_METAL     GColorLightGray    // rhodium in ambient light
+  #define COLOR_METAL_LIT GColorWhite        // ... and where it catches the light
+  #define COLOR_METAL_CUT GColorDarkGray     // outline, engraving
+  #define COLOR_TRACK     GColorDarkGray     // minute hairlines
+  #define COLOR_ENGRAVE   GColorBlack        // the numerals cut into the hands
 #else
-  #define COLOR_DIAL        GColorWhite
-  #define COLOR_DIAL_DEEP   GColorBlack
-  #define COLOR_METAL       GColorWhite
-  #define COLOR_METAL_SHADE GColorWhite
-  #define COLOR_METAL_EDGE  GColorBlack
-  #define COLOR_NUMERAL     GColorBlack
-  // On a white dial the markers have to be solid, or they read as outlines.
-  #define COLOR_TICK        GColorBlack
-  #define COLOR_TICK_EDGE   GColorBlack
+  #define COLOR_DIAL      GColorWhite
+  #define COLOR_SHADOW    GColorBlack
+  #define COLOR_METAL     GColorWhite
+  #define COLOR_METAL_LIT GColorWhite
+  #define COLOR_METAL_CUT GColorBlack
+  #define COLOR_TRACK     GColorBlack
+  #define COLOR_ENGRAVE   GColorBlack
 #endif
 
 // ---------------------------------------------------------------------------
-// Layout
+// Proportions
+//
+// Everything scales off R, half the shorter screen dimension, so the same face
+// lands on a 144x168 Pebble 2 and a 260x260 Round 2. Percentages, with pixel
+// floors where a percentage would fall below what the display can resolve.
 // ---------------------------------------------------------------------------
 
-typedef struct {
-  int min_dim;      // applies when the shorter screen side is at least this
-  int hour_r;       // distance from centre to the hour plaque
-  int minute_r;     // ... and to the minute plaque
-  int pill_w;       // plaque size
-  int pill_h;
-  int shaft_w;      // hand shaft width
-  int tick_len;     // hour tick length
-  int tick_w;       // hour tick width
-  int text_dy;      // vertical nudge for the numerals
-  int minute_pips;  // draw the 60-minute track?
-  const char *font;
-} Tier;
+// GEOMETRY_BEGIN (tools/preview.py parses these)
+#define G_MINUTE_LEN   80  // % of R
+#define G_HOUR_LEN     52
+#define G_HAND_W       18
+#define G_HAND_W_MIN   13  // px
+#define G_HAND_TAIL     9  // % of R, the counterweight behind the centre
+#define G_BATON_LEN    15
+#define G_BATON_W       6
+#define G_BATON_W_MIN   5  // px
+#define G_BATON_INSET   7
+#define G_TICK_LEN      5
+#define G_TICK_LEN_MIN  3  // px
+#define G_TICK_INSET    3
+#define G_TICK_IN_MIN   2  // px
+#define G_TEXT_POS     62  // % of hand length
+#define G_DIGIT_GAP     2  // px
+// GEOMETRY_END
 
-// LAYOUT_TABLE_BEGIN (tools/preview.py parses this block)
-static const Tier TIERS[] = {
-  // gabbro 260x260
-  { 240, 44, 92, 52, 34, 9, 14, 5, -2, 1, FONT_KEY_DROID_SERIF_28_BOLD },
-  // emery 200x228
-  { 190, 32, 72, 48, 32, 7, 11, 4, -2, 1, FONT_KEY_DROID_SERIF_28_BOLD },
-  // chalk 180x180
-  { 170, 30, 62, 36, 26, 6,  9, 3, -1, 1, FONT_KEY_GOTHIC_18_BOLD },
-  // aplite / basalt / diorite / flint 144x168, and Quick View
-  {   0, 24, 52, 32, 22, 5,  8, 3, -1, 0, FONT_KEY_GOTHIC_18_BOLD },
-};
-// LAYOUT_TABLE_END
+#define PCT(value, pct) (((value) * (pct)) / 100)
 
-static const Tier *pick_tier(int min_dim) {
-  for (unsigned i = 0; i < ARRAY_LENGTH(TIERS); i++) {
-    if (min_dim >= TIERS[i].min_dim) {
-      return &TIERS[i];
-    }
-  }
-  return &TIERS[ARRAY_LENGTH(TIERS) - 1];
+static int at_least(int value, int floor) {
+  return value < floor ? floor : value;
 }
+
+// ---------------------------------------------------------------------------
+// Numerals
+//
+// The numbers rotate with their hand, so they cannot be system-font text — the
+// SDK only draws text upright. Each digit is a stroked outline on a 10x16 grid,
+// drawn as line segments through the hand's own rotated frame. Format per
+// digit: a stroke length, that many x,y pairs, repeated, terminated by 0.
+// ---------------------------------------------------------------------------
+
+// DIGITS_BEGIN (tools/preview.py parses these)
+static const int8_t DIGIT_0[] = {11, 2,4, 1,7, 1,11, 2,14, 5,15, 8,14, 9,11, 9,7, 8,4, 5,3, 2,4, 0};
+static const int8_t DIGIT_1[] = {3, 1,6, 5,3, 5,15, 0};
+static const int8_t DIGIT_2[] = {9, 1,6, 2,4, 5,3, 8,4, 9,7, 8,10, 2,14, 1,15, 9,15, 0};
+static const int8_t DIGIT_3[] = {11, 1,5, 3,3, 7,3, 9,5, 8,8, 5,9, 8,10, 9,12, 7,15, 3,15, 1,13, 0};
+static const int8_t DIGIT_4[] = {3, 8,3, 1,12, 9,12, 2, 8,3, 8,15, 0};
+static const int8_t DIGIT_5[] = {9, 8,3, 2,3, 2,8, 5,7, 8,9, 9,12, 7,15, 3,15, 1,13, 0};
+static const int8_t DIGIT_6[] = {12, 8,4, 5,3, 2,5, 1,9, 1,12, 3,15, 6,15, 8,13, 8,11, 6,9, 3,9, 1,11, 0};
+static const int8_t DIGIT_7[] = {3, 1,3, 9,3, 4,15, 0};
+static const int8_t DIGIT_8[] = {7, 5,3, 2,4, 2,7, 5,9, 8,7, 8,4, 5,3, 7, 5,9, 2,11, 2,14, 5,15, 8,14, 8,11, 5,9, 0};
+static const int8_t DIGIT_9[] = {12, 2,14, 5,15, 8,13, 9,9, 9,6, 7,3, 4,3, 2,5, 2,7, 4,9, 7,9, 9,7, 0};
+// DIGITS_END
+
+static const int8_t *const DIGITS[10] = {
+  DIGIT_0, DIGIT_1, DIGIT_2, DIGIT_3, DIGIT_4,
+  DIGIT_5, DIGIT_6, DIGIT_7, DIGIT_8, DIGIT_9,
+};
+
+// The strokes above occupy x 1..9 and y 3..15 of the grid; mapping from those
+// bounds rather than the whole grid makes the digits fill the numeral height.
+#define DIGIT_X0 1
+#define DIGIT_Y0 3
+#define DIGIT_W_UNITS 8
+#define DIGIT_H_UNITS 12
 
 // ---------------------------------------------------------------------------
 // State
@@ -84,130 +111,244 @@ static Layer *s_canvas;
 static int s_hour;    // 1..12
 static int s_minute;  // 0..59
 
+typedef struct {
+  GPoint centre;
+  int half_w;     // to the dial edge, horizontally
+  int half_h;
+  int r;          // the smaller of the two: everything scales off this
+  int hand_w;
+  int numeral_h;
+  int stroke;     // engraving weight
+  int shadow;     // how far the metal floats above the dial
+} Geom;
+
+// ---------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------
+
+// Where the ray at this angle meets the edge of the dial. On a rectangular
+// screen that is farther away at the corners than at the sides, which is what
+// makes the markers sit along the case rather than on an inscribed circle.
+static int dial_radius(const Geom *g, int32_t angle) {
+#ifdef PBL_ROUND
+  (void)angle;
+  return g->r;
+#else
+  int32_t s = sin_lookup(angle);
+  int32_t c = cos_lookup(angle);
+  if (s < 0) { s = -s; }
+  if (c < 0) { c = -c; }
+
+  int32_t r = g->r * 4;  // any bound past the corner distance
+  if (s > 0) {
+    int32_t limit = (g->half_w * TRIG_MAX_RATIO) / s;
+    if (limit < r) { r = limit; }
+  }
+  if (c > 0) {
+    int32_t limit = (g->half_h * TRIG_MAX_RATIO) / c;
+    if (limit < r) { r = limit; }
+  }
+  return (int)r;
+#endif
+}
+
+// A point at (along, across) in the frame of a hand or marker at this angle:
+// `along` runs outward from the centre, `across` to its right.
+static GPoint frame_point(GPoint origin, int32_t angle, int along, int across) {
+  int32_t s = sin_lookup(angle);
+  int32_t c = cos_lookup(angle);
+  return GPoint(origin.x + (int16_t)((along * s + across * c) / TRIG_MAX_RATIO),
+                origin.y + (int16_t)((across * s - along * c) / TRIG_MAX_RATIO));
+}
+
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
 
-static GPoint polar(GPoint centre, int32_t angle, int r) {
-  return GPoint(centre.x + (int16_t)((sin_lookup(angle) * r) / TRIG_MAX_RATIO),
-                centre.y - (int16_t)((cos_lookup(angle) * r) / TRIG_MAX_RATIO));
+static void fill_poly(GContext *ctx, GPoint *points, int count, GColor color) {
+  GPathInfo info = { .num_points = (uint32_t)count, .points = points };
+  GPath *path = gpath_create(&info);
+  if (!path) {
+    return;
+  }
+  graphics_context_set_fill_color(ctx, color);
+  gpath_draw_filled(ctx, path);
+  gpath_destroy(path);
 }
 
-static void draw_dial(GContext *ctx, GRect bounds, GPoint centre, int radius,
-                      const Tier *tier) {
+static void outline_poly(GContext *ctx, GPoint *points, int count, GColor color) {
+  GPathInfo info = { .num_points = (uint32_t)count, .points = points };
+  GPath *path = gpath_create(&info);
+  if (!path) {
+    return;
+  }
+  graphics_context_set_stroke_color(ctx, color);
+  graphics_context_set_stroke_width(ctx, 1);
+  gpath_draw_outline(ctx, path);
+  gpath_destroy(path);
+}
+
+static void offset_poly(GPoint *dst, const GPoint *src, int count, int by) {
+  for (int i = 0; i < count; i++) {
+    dst[i] = GPoint(src[i].x + by, src[i].y + by);
+  }
+}
+
+// Which side of a part at this angle faces the light. The key is top left, so
+// the lit edge is the one whose outward normal points up and to the left.
+static int lit_side(int32_t angle) {
+  return (cos_lookup(angle) + sin_lookup(angle) > 0) ? -1 : 1;
+}
+
+// A piece of applied metal: warm shadow beneath, body in two tones split down
+// its axis, cut edge around it. `shape` is given as (along, across) pairs and
+// must run from the lit edge to the shaded edge so the halves come out right.
+static void draw_applied(GContext *ctx, const Geom *g, GPoint origin,
+                         int32_t angle, const int *shape, int count) {
+  GPoint body[8];
+  GPoint half[8];
+  GPoint shadow[8];
+  int lit = lit_side(angle);
+
+  for (int i = 0; i < count; i++) {
+    body[i] = frame_point(origin, angle, shape[i * 2], shape[i * 2 + 1] * lit);
+    // The lit half is the shape with its shaded edge folded onto the axis.
+    int across = shape[i * 2 + 1] * lit;
+    half[i] = frame_point(origin, angle, shape[i * 2],
+                          (across * lit > 0) ? 0 : across);
+  }
+
+  offset_poly(shadow, body, count, g->shadow);
+  fill_poly(ctx, shadow, count, COLOR_SHADOW);
+  fill_poly(ctx, body, count, COLOR_METAL);
+  fill_poly(ctx, half, count, COLOR_METAL_LIT);
+  outline_poly(ctx, body, count, COLOR_METAL_CUT);
+}
+
+static void draw_baton(GContext *ctx, const Geom *g, int32_t angle, int across) {
+  int outer = dial_radius(g, angle) - at_least(PCT(g->r, G_TICK_INSET), G_TICK_IN_MIN)
+              - at_least(PCT(g->r, G_TICK_LEN), G_TICK_LEN_MIN)
+              - PCT(g->r, G_BATON_INSET) / 2;
+  int inner = outer - PCT(g->r, G_BATON_LEN);
+  int w = at_least(PCT(g->r, G_BATON_W), G_BATON_W_MIN);
+
+  // Lit edge first, then round the far end, so draw_applied can split it.
+  const int shape[] = {
+    inner, -w / 2,
+    outer, -w / 2,
+    outer, w / 2,
+    inner, w / 2,
+  };
+  GPoint origin = frame_point(g->centre, angle, 0, across);
+  draw_applied(ctx, g, origin, angle, shape, 4);
+}
+
+static void draw_dial(GContext *ctx, const Geom *g, GRect bounds) {
   graphics_context_set_fill_color(ctx, COLOR_DIAL);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
-  // Minute track: one deeper-salmon pip per minute, with the hour positions
-  // left to the rhodium ticks. Small screens get a plain hairline instead —
-  // sixty pips at that size is noise.
-  if (tier->minute_pips) {
-    graphics_context_set_fill_color(ctx, COLOR_DIAL_DEEP);
-    for (int i = 0; i < 60; i++) {
-      if (i % 5 == 0) {
-        continue;
-      }
-      graphics_fill_circle(ctx, polar(centre, i * TRIG_MAX_ANGLE / 60, radius - 6), 1);
-    }
-  } else {
-    graphics_context_set_stroke_color(ctx, COLOR_DIAL_DEEP);
-    graphics_context_set_stroke_width(ctx, 1);
-    graphics_draw_circle(ctx, centre, radius - 6);
+  // Minute track: sixty hairlines pinned to the edge of the dial.
+  int tick_len = at_least(PCT(g->r, G_TICK_LEN), G_TICK_LEN_MIN);
+  int tick_inset = at_least(PCT(g->r, G_TICK_INSET), G_TICK_IN_MIN);
+  graphics_context_set_stroke_color(ctx, COLOR_TRACK);
+  graphics_context_set_stroke_width(ctx, 1);
+  for (int i = 0; i < 60; i++) {
+    int32_t angle = i * TRIG_MAX_ANGLE / 60;
+    int outer = dial_radius(g, angle) - tick_inset;
+    int len = (i % 5 == 0) ? tick_len * 3 / 2 : tick_len;
+    graphics_draw_line(ctx, frame_point(g->centre, angle, outer - len, 0),
+                       frame_point(g->centre, angle, outer, 0));
   }
 
-  // Hour ticks in rhodium, doubled in length at the quarters.
+  // Applied hour batons, doubled at twelve so the dial has an up.
   for (int i = 0; i < 12; i++) {
     int32_t angle = i * TRIG_MAX_ANGLE / 12;
-    int len = (i % 3 == 0) ? tier->tick_len : tier->tick_len * 2 / 3;
-    int outer_r = radius - 4;
-    GPoint outer = polar(centre, angle, outer_r);
-    GPoint inner = polar(centre, angle, outer_r - len);
-
-    graphics_context_set_stroke_width(ctx, tier->tick_w + 2);
-    graphics_context_set_stroke_color(ctx, COLOR_TICK_EDGE);
-    graphics_draw_line(ctx, inner, outer);
-
-    graphics_context_set_stroke_width(ctx, tier->tick_w);
-    graphics_context_set_stroke_color(ctx, COLOR_TICK);
-    graphics_draw_line(ctx, inner, outer);
+    if (i == 0) {
+      int w = at_least(PCT(g->r, G_BATON_W), G_BATON_W_MIN);
+      draw_baton(ctx, g, angle, -w);
+      draw_baton(ctx, g, angle, w);
+    } else {
+      draw_baton(ctx, g, angle, 0);
+    }
   }
 }
 
-// A rhodium shaft: dark outline, polished body, and a brushed shade line
-// along one edge so the metal reads as a bevelled bar rather than a stripe.
-static void draw_shaft(GContext *ctx, GPoint centre, int32_t angle, int len,
-                       int width) {
-  GPoint tip = polar(centre, angle, len);
+static void draw_hand(GContext *ctx, const Geom *g, int32_t angle, int len) {
+  int w = g->hand_w;
+  int tail = PCT(g->r, G_HAND_TAIL);
+  const int shape[] = {
+    -tail,        -w / 2,
+    len * 88 / 100, -w / 2,
+    len,          0,
+    len * 88 / 100, w / 2,
+    -tail,        w / 2,
+  };
+  draw_applied(ctx, g, g->centre, angle, shape, 5);
+}
 
-  graphics_context_set_stroke_color(ctx, COLOR_METAL_EDGE);
-  graphics_context_set_stroke_width(ctx, width + 2);
-  graphics_draw_line(ctx, centre, tip);
+// The number engraved along a hand, rotated into the hand's frame. Digits are
+// flipped end for end on the left half of the dial so they never read upside
+// down — the same trick as lettering on a tyre wall.
+static void draw_numerals(GContext *ctx, const Geom *g, int32_t angle, int along,
+                          const char *text) {
+  int digit_w = g->numeral_h * DIGIT_W_UNITS / DIGIT_H_UNITS;
+  int advance = digit_w + G_DIGIT_GAP;
+  int count = (int)strlen(text);
+  int start = -(advance * count - G_DIGIT_GAP) / 2;
+  bool flip = sin_lookup(angle) < 0;
 
-  graphics_context_set_stroke_color(ctx, COLOR_METAL);
-  graphics_context_set_stroke_width(ctx, width);
-  graphics_draw_line(ctx, centre, tip);
+  GPoint origin = frame_point(g->centre, angle, along, 0);
+  graphics_context_set_stroke_color(ctx, COLOR_ENGRAVE);
+  graphics_context_set_stroke_width(ctx, g->stroke);
 
-  // Offset perpendicular to the shaft: (cos, sin) is the normal of (sin, -cos).
-  int off = width / 3;
-  if (off < 1) {
-    off = 1;
+  for (int i = 0; i < count; i++) {
+    const int8_t *digit = DIGITS[text[i] - '0'];
+    int base = start + i * advance;
+
+    while (*digit) {
+      int points = *digit++;
+      GPoint previous = GPoint(0, 0);
+      for (int p = 0; p < points; p++) {
+        // Grid to hand frame: x runs along the hand, y across it.
+        int u = base + ((digit[p * 2] - DIGIT_X0) * digit_w) / DIGIT_W_UNITS;
+        int v = ((digit[p * 2 + 1] - DIGIT_Y0) * g->numeral_h) / DIGIT_H_UNITS
+                - g->numeral_h / 2;
+        GPoint at = frame_point(origin, angle, flip ? -u : u, flip ? v : -v);
+        if (p > 0) {
+          graphics_draw_line(ctx, previous, at);
+        }
+        previous = at;
+      }
+      digit += points * 2;
+    }
   }
-  int16_t dx = (int16_t)((cos_lookup(angle) * off) / TRIG_MAX_RATIO);
-  int16_t dy = (int16_t)((sin_lookup(angle) * off) / TRIG_MAX_RATIO);
-  graphics_context_set_stroke_color(ctx, COLOR_METAL_SHADE);
-  graphics_context_set_stroke_width(ctx, 1);
-  graphics_draw_line(ctx, GPoint(centre.x + dx, centre.y + dy),
-                     GPoint(tip.x + dx, tip.y + dy));
 }
 
-// The plaque at the end of a hand, with its numeral engraved upright.
-static void draw_plaque(GContext *ctx, GPoint at, const char *text,
-                        const Tier *tier) {
-  GRect pill = GRect(at.x - tier->pill_w / 2, at.y - tier->pill_h / 2,
-                     tier->pill_w, tier->pill_h);
-  int corner = tier->pill_h / 2;
-
-  graphics_context_set_fill_color(ctx, COLOR_METAL);
-  graphics_fill_rect(ctx, pill, corner, GCornersAll);
-
-  graphics_context_set_stroke_color(ctx, COLOR_METAL_EDGE);
-  graphics_context_set_stroke_width(ctx, 1);
-  graphics_draw_round_rect(ctx, pill, corner);
-
-  graphics_context_set_stroke_color(ctx, COLOR_METAL_SHADE);
-  graphics_draw_round_rect(ctx, grect_inset(pill, GEdgeInsets(1)), corner - 1);
-
-  GFont font = fonts_get_system_font(tier->font);
-  GSize size = graphics_text_layout_get_content_size(
-      text, font, GRect(0, 0, tier->pill_w, tier->pill_h * 2),
-      GTextOverflowModeFill, GTextAlignmentCenter);
-  GRect box = GRect(pill.origin.x, at.y - size.h / 2 + tier->text_dy,
-                    tier->pill_w, size.h + 4);
-
-  graphics_context_set_text_color(ctx, COLOR_NUMERAL);
-  graphics_draw_text(ctx, text, font, box, GTextOverflowModeFill,
-                     GTextAlignmentCenter, NULL);
-}
-
-static void draw_cap(GContext *ctx, GPoint centre, const Tier *tier) {
-  int r = tier->shaft_w / 2 + 3;
-  graphics_context_set_fill_color(ctx, COLOR_METAL_EDGE);
-  graphics_fill_circle(ctx, centre, r);
-  graphics_context_set_fill_color(ctx, COLOR_METAL);
-  graphics_fill_circle(ctx, centre, r - 1);
-  graphics_context_set_fill_color(ctx, COLOR_DIAL_DEEP);
-  graphics_fill_circle(ctx, centre, 1);
+static void draw_cap(GContext *ctx, const Geom *g) {
+  int r = g->hand_w / 2 + 1;
+  graphics_context_set_fill_color(ctx, COLOR_SHADOW);
+  graphics_fill_circle(ctx, GPoint(g->centre.x + g->shadow, g->centre.y + g->shadow), r);
+  graphics_context_set_fill_color(ctx, COLOR_METAL_CUT);
+  graphics_fill_circle(ctx, g->centre, r);
+  graphics_context_set_fill_color(ctx, COLOR_METAL_LIT);
+  graphics_fill_circle(ctx, GPoint(g->centre.x - 1, g->centre.y - 1), r - 3);
 }
 
 static void canvas_update(Layer *layer, GContext *ctx) {
   GRect full = layer_get_bounds(layer);
   GRect bounds = layer_get_unobstructed_bounds(layer);
-  GPoint centre = grect_center_point(&bounds);
-  int radius = (bounds.size.w < bounds.size.h ? bounds.size.w : bounds.size.h) / 2;
-  const Tier *tier = pick_tier(radius * 2);
 
-  // The dial fills the whole layer; only the hands respect the Quick View area.
-  draw_dial(ctx, full, centre, radius, tier);
+  Geom g;
+  g.centre = grect_center_point(&bounds);
+  g.half_w = bounds.size.w / 2 - 2;
+  g.half_h = bounds.size.h / 2 - 2;
+  g.r = (g.half_w < g.half_h) ? g.half_w : g.half_h;
+  g.hand_w = at_least(PCT(g.r, G_HAND_W), G_HAND_W_MIN);
+  g.numeral_h = g.hand_w - 5;
+  g.stroke = (g.r >= 90) ? 2 : 1;
+  g.shadow = (g.r >= 110) ? 2 : 1;
+
+  draw_dial(ctx, &g, full);
 
   char hour_text[3];
   char minute_text[3];
@@ -215,17 +356,19 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   snprintf(minute_text, sizeof(minute_text), "%02d", s_minute);
 
   // Both hands sit exactly on the marker they name: the hour hand on the hour
-  // tick, not part-way to the next one, so hand and numeral always agree.
+  // baton, not part-way to the next one, so hand and numeral always agree.
   int32_t hour_angle = (s_hour % 12) * TRIG_MAX_ANGLE / 12;
   int32_t minute_angle = s_minute * TRIG_MAX_ANGLE / 60;
+  int hour_len = PCT(g.r, G_HOUR_LEN);
+  int minute_len = PCT(g.r, G_MINUTE_LEN);
 
-  // Shafts and cap first, then both plaques: when the hands line up, the
-  // minute shaft would otherwise run straight through the hour numeral.
-  draw_shaft(ctx, centre, hour_angle, tier->hour_r, tier->shaft_w);
-  draw_shaft(ctx, centre, minute_angle, tier->minute_r, tier->shaft_w);
-  draw_cap(ctx, centre, tier);
-  draw_plaque(ctx, polar(centre, hour_angle, tier->hour_r), hour_text, tier);
-  draw_plaque(ctx, polar(centre, minute_angle, tier->minute_r), minute_text, tier);
+  // Hands, then cap, then both numbers: when the hands line up the minute hand
+  // covers the hour hand, and the hour number has to survive on top of it.
+  draw_hand(ctx, &g, hour_angle, hour_len);
+  draw_hand(ctx, &g, minute_angle, minute_len);
+  draw_cap(ctx, &g);
+  draw_numerals(ctx, &g, hour_angle, PCT(hour_len, G_TEXT_POS), hour_text);
+  draw_numerals(ctx, &g, minute_angle, PCT(minute_len, G_TEXT_POS), minute_text);
 }
 
 // ---------------------------------------------------------------------------

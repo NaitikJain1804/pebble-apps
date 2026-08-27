@@ -3,23 +3,23 @@
 
     python3 tools/preview.py 11 18 [outdir]
 
-Renders one PNG per target platform. The layout numbers are parsed out of
-src/c/main.c so the preview cannot drift from the watchface; the drawing order
-below mirrors main.c by hand. System fonts are stood in for with DejaVu at the
-same pixel height, so glyph widths are close but not exact — this is a design
-check for fit, position and colour, not a substitute for the emulator.
+Renders one PNG per platform. The proportions and the digit outlines are parsed
+out of src/c/main.c so they cannot drift; the drawing order and the formulas
+that apply the proportions are mirrored here by hand. A design check for fit,
+shape and colour — the emulator is still the authority.
 """
 
 import re
 import sys
+from math import cos, radians, sin
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 MAIN_C = ROOT / "src" / "c" / "main.c"
 
-# Platform name -> (width, height, round?, colour?)
+# name -> (w, h, round?, colour?)
 PLATFORMS = {
     "aplite": (144, 168, False, False),
     "basalt": (144, 168, False, True),
@@ -31,152 +31,182 @@ PLATFORMS = {
 }
 
 COLOR = {
-    "DIAL": (255, 170, 170),        # GColorMelon
-    "DIAL_DEEP": (255, 85, 85),     # GColorSunsetOrange
-    "METAL": (255, 255, 255),       # polished rhodium
-    "METAL_SHADE": (170, 170, 170),  # GColorLightGray
-    "METAL_EDGE": (85, 85, 85),      # GColorDarkGray
-    "NUMERAL": (0, 0, 0),
-    "TICK": (255, 255, 255),
-    "TICK_EDGE": (85, 85, 85),
+    "DIAL": (255, 170, 170),      # GColorMelon
+    "SHADOW": (255, 85, 85),      # GColorSunsetOrange
+    "METAL": (170, 170, 170),     # GColorLightGray
+    "METAL_LIT": (255, 255, 255),
+    "METAL_CUT": (85, 85, 85),    # GColorDarkGray
+    "TRACK": (85, 85, 85),
+    "ENGRAVE": (0, 0, 0),
 }
 MONO = {
     "DIAL": (255, 255, 255),
-    "DIAL_DEEP": (0, 0, 0),
+    "SHADOW": (0, 0, 0),
     "METAL": (255, 255, 255),
-    "METAL_SHADE": (255, 255, 255),
-    "METAL_EDGE": (0, 0, 0),
-    "NUMERAL": (0, 0, 0),
-    "TICK": (0, 0, 0),
-    "TICK_EDGE": (0, 0, 0),
+    "METAL_LIT": (255, 255, 255),
+    "METAL_CUT": (0, 0, 0),
+    "TRACK": (0, 0, 0),
+    "ENGRAVE": (0, 0, 0),
 }
 
-# DejaVu stands in for the Pebble system fonts. The number in a Pebble font key
-# is its line height in pixels, which is what PIL's size argument means too.
-FONT_FILES = {
-    "FONT_KEY_DROID_SERIF_28_BOLD": ("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", 24),
-    "FONT_KEY_GOTHIC_18_BOLD": ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16),
-}
-
-TIER_FIELDS = ["min_dim", "hour_r", "minute_r", "pill_w", "pill_h", "shaft_w",
-               "tick_len", "tick_w", "text_dy", "minute_pips", "font"]
+DIGIT_X0, DIGIT_Y0, DIGIT_W_UNITS, DIGIT_H_UNITS = 1, 3, 8, 12
 
 
-def load_tiers():
+def load_source():
     src = MAIN_C.read_text()
-    block = src.split("LAYOUT_TABLE_BEGIN")[1].split("LAYOUT_TABLE_END")[0]
-    tiers = []
-    for row in re.findall(r"\{([^{}]*)\}", block):
-        values = [v.strip() for v in row.split(",")]
-        tier = dict(zip(TIER_FIELDS, values))
-        for key in TIER_FIELDS[:-1]:
-            tier[key] = int(tier[key])
-        tiers.append(tier)
-    return tiers
+    geom = {m[0]: int(m[1]) for m in re.findall(
+        r"#define (G_\w+)\s+(-?\d+)",
+        src.split("GEOMETRY_BEGIN")[1].split("GEOMETRY_END")[0])}
+    digits = {}
+    block = src.split("DIGITS_BEGIN")[1].split("DIGITS_END")[0]
+    for name, body in re.findall(r"DIGIT_(\d)\[\] = \{([^}]*)\}", block):
+        values = [int(v) for v in body.split(",")]
+        strokes, i = [], 0
+        while values[i]:
+            n = values[i]
+            strokes.append([(values[i + 1 + 2 * p], values[i + 2 + 2 * p]) for p in range(n)])
+            i += 1 + 2 * n
+        digits[int(name)] = strokes
+    return geom, digits
 
 
-def pick_tier(tiers, min_dim):
-    for tier in tiers:
-        if min_dim >= tier["min_dim"]:
-            return tier
-    return tiers[-1]
+def at_least(v, floor):
+    return max(v, floor)
 
 
-def polar(centre, angle_deg, r):
-    from math import cos, radians, sin
-    a = radians(angle_deg)
-    # Pebble's integer trig truncates; close enough for a layout check.
-    return (int(centre[0] + sin(a) * r), int(centre[1] - cos(a) * r))
+def pct(v, p):
+    return int(v * p / 100)
 
 
-def draw_line(d, a, b, color, width):
-    d.line([a, b], fill=color, width=width)
-    # Pebble's thick lines have rounded-ish ends; fake the joint at both ends.
-    if width > 2:
-        r = width // 2
-        for p in (a, b):
-            d.ellipse([p[0] - r, p[1] - r, p[0] + r, p[1] + r], fill=color)
+class Face:
+    def __init__(self, platform, geom, digits):
+        self.w, self.h, self.round, is_color = PLATFORMS[platform]
+        self.c = COLOR if is_color else MONO
+        self.g, self.digits = geom, digits
+        self.img = Image.new("RGB", (self.w, self.h), self.c["DIAL"])
+        self.d = ImageDraw.Draw(self.img)
 
+        self.centre = (self.w // 2, self.h // 2)
+        self.half_w = self.w // 2 - 2
+        self.half_h = self.h // 2 - 2
+        self.r = min(self.half_w, self.half_h)
+        self.hand_w = at_least(pct(self.r, geom["G_HAND_W"]), geom["G_HAND_W_MIN"])
+        self.numeral_h = self.hand_w - 5
+        self.stroke = 2 if self.r >= 90 else 1
+        self.shadow = 2 if self.r >= 110 else 1
 
-def render(platform, hour, minute, tiers):
-    w, h, is_round, is_color = PLATFORMS[platform]
-    c = COLOR if is_color else MONO
-    img = Image.new("RGB", (w, h), c["DIAL"])
-    d = ImageDraw.Draw(img)
+    def dial_radius(self, deg):
+        if self.round:
+            return self.r
+        s, c = abs(sin(radians(deg))), abs(cos(radians(deg)))
+        r = self.r * 4
+        if s > 0:
+            r = min(r, self.half_w / s)
+        if c > 0:
+            r = min(r, self.half_h / c)
+        return int(r)
 
-    centre = (w // 2, h // 2)
-    radius = min(w, h) // 2
-    tier = pick_tier(tiers, radius * 2)
+    def frame(self, origin, deg, along, across):
+        s, c = sin(radians(deg)), cos(radians(deg))
+        return (int(origin[0] + along * s + across * c),
+                int(origin[1] + across * s - along * c))
 
-    # --- dial -------------------------------------------------------------
-    if tier["minute_pips"]:
+    def lit_side(self, deg):
+        return -1 if cos(radians(deg)) + sin(radians(deg)) > 0 else 1
+
+    def applied(self, origin, deg, shape):
+        lit = self.lit_side(deg)
+        body, half = [], []
+        for along, across in shape:
+            across *= lit
+            body.append(self.frame(origin, deg, along, across))
+            half.append(self.frame(origin, deg, along, 0 if across * lit > 0 else across))
+        shadow = [(x + self.shadow, y + self.shadow) for x, y in body]
+        self.d.polygon(shadow, fill=self.c["SHADOW"])
+        self.d.polygon(body, fill=self.c["METAL"])
+        self.d.polygon(half, fill=self.c["METAL_LIT"])
+        self.d.line(body + [body[0]], fill=self.c["METAL_CUT"], width=1)
+
+    def baton(self, deg, across):
+        g = self.g
+        outer = (self.dial_radius(deg)
+                 - at_least(pct(self.r, g["G_TICK_INSET"]), g["G_TICK_IN_MIN"])
+                 - at_least(pct(self.r, g["G_TICK_LEN"]), g["G_TICK_LEN_MIN"])
+                 - pct(self.r, g["G_BATON_INSET"]) // 2)
+        inner = outer - pct(self.r, g["G_BATON_LEN"])
+        w = at_least(pct(self.r, g["G_BATON_W"]), g["G_BATON_W_MIN"])
+        shape = [(inner, -w // 2), (outer, -w // 2), (outer, w // 2), (inner, w // 2)]
+        self.applied(self.frame(self.centre, deg, 0, across), deg, shape)
+
+    def dial(self):
+        g = self.g
+        tick_len = at_least(pct(self.r, g["G_TICK_LEN"]), g["G_TICK_LEN_MIN"])
+        inset = at_least(pct(self.r, g["G_TICK_INSET"]), g["G_TICK_IN_MIN"])
         for i in range(60):
-            if i % 5 == 0:
-                continue
-            p = polar(centre, i * 6, radius - 6)
-            d.ellipse([p[0] - 1, p[1] - 1, p[0] + 1, p[1] + 1], fill=c["DIAL_DEEP"])
-    else:
-        d.ellipse([centre[0] - radius + 6, centre[1] - radius + 6,
-                   centre[0] + radius - 6, centre[1] + radius - 6],
-                  outline=c["DIAL_DEEP"], width=1)
+            deg = i * 6
+            outer = self.dial_radius(deg) - inset
+            length = tick_len * 3 // 2 if i % 5 == 0 else tick_len
+            self.d.line([self.frame(self.centre, deg, outer - length, 0),
+                         self.frame(self.centre, deg, outer, 0)],
+                        fill=self.c["TRACK"], width=1)
+        w = at_least(pct(self.r, g["G_BATON_W"]), g["G_BATON_W_MIN"])
+        for i in range(12):
+            if i == 0:
+                self.baton(0, -w)
+                self.baton(0, w)
+            else:
+                self.baton(i * 30, 0)
 
-    for i in range(12):
-        angle = i * 30
-        length = tier["tick_len"] if i % 3 == 0 else tier["tick_len"] * 2 // 3
-        outer_r = radius - 4
-        outer = polar(centre, angle, outer_r)
-        inner = polar(centre, angle, outer_r - length)
-        draw_line(d, inner, outer, c["TICK_EDGE"], tier["tick_w"] + 2)
-        draw_line(d, inner, outer, c["TICK"], tier["tick_w"])
+    def hand(self, deg, length):
+        w, tail = self.hand_w, pct(self.r, self.g["G_HAND_TAIL"])
+        shape = [(-tail, -w // 2), (length * 88 // 100, -w // 2), (length, 0),
+                 (length * 88 // 100, w // 2), (-tail, w // 2)]
+        self.applied(self.centre, deg, shape)
 
-    # --- hands ------------------------------------------------------------
-    def shaft(angle_deg, r):
-        from math import cos, radians, sin
-        tip = polar(centre, angle_deg, r)
-        draw_line(d, centre, tip, c["METAL_EDGE"], tier["shaft_w"] + 2)
-        draw_line(d, centre, tip, c["METAL"], tier["shaft_w"])
-        off = max(1, tier["shaft_w"] // 3)
-        a = radians(angle_deg)
-        dx, dy = int(cos(a) * off), int(sin(a) * off)
-        draw_line(d, (centre[0] + dx, centre[1] + dy), (tip[0] + dx, tip[1] + dy),
-                  c["METAL_SHADE"], 1)
+    def numerals(self, deg, along, text):
+        digit_w = self.numeral_h * DIGIT_W_UNITS // DIGIT_H_UNITS
+        advance = digit_w + self.g["G_DIGIT_GAP"]
+        start = -(advance * len(text) - self.g["G_DIGIT_GAP"]) // 2
+        flip = sin(radians(deg)) < 0
+        origin = self.frame(self.centre, deg, along, 0)
+        for i, ch in enumerate(text):
+            base = start + i * advance
+            for stroke in self.digits[int(ch)]:
+                pts = []
+                for x, y in stroke:
+                    u = base + (x - DIGIT_X0) * digit_w // DIGIT_W_UNITS
+                    v = ((y - DIGIT_Y0) * self.numeral_h // DIGIT_H_UNITS
+                         - self.numeral_h // 2)
+                    pts.append(self.frame(origin, deg, -u if flip else u, v if flip else -v))
+                self.d.line(pts, fill=self.c["ENGRAVE"], width=self.stroke)
 
-    def plaque(angle_deg, r, text):
-        tip = polar(centre, angle_deg, r)
-        pill = [tip[0] - tier["pill_w"] // 2, tip[1] - tier["pill_h"] // 2,
-                tip[0] + tier["pill_w"] // 2, tip[1] + tier["pill_h"] // 2]
-        corner = tier["pill_h"] // 2
-        d.rounded_rectangle(pill, radius=corner, fill=c["METAL"], outline=c["METAL_EDGE"])
-        d.rounded_rectangle([pill[0] + 1, pill[1] + 1, pill[2] - 1, pill[3] - 1],
-                            radius=corner - 1, outline=c["METAL_SHADE"])
+    def cap(self):
+        r = self.hand_w // 2 + 1
+        cx, cy = self.centre
+        for (x, y), rr, col in (((cx + self.shadow, cy + self.shadow), r, "SHADOW"),
+                                ((cx, cy), r, "METAL_CUT"),
+                                ((cx - 1, cy - 1), r - 3, "METAL_LIT")):
+            self.d.ellipse([x - rr, y - rr, x + rr, y + rr], fill=self.c[col])
 
-        path, size = FONT_FILES[tier["font"]]
-        font = ImageFont.truetype(path, size)
-        d.text((tip[0], tip[1] + tier["text_dy"]), text, font=font,
-               fill=c["NUMERAL"], anchor="mm")
+    def render(self, hour, minute):
+        self.dial()
+        hour_len = pct(self.r, self.g["G_HOUR_LEN"])
+        minute_len = pct(self.r, self.g["G_MINUTE_LEN"])
+        ha, ma = (hour % 12) * 30, minute * 6
+        self.hand(ha, hour_len)
+        self.hand(ma, minute_len)
+        self.cap()
+        self.numerals(ha, pct(hour_len, self.g["G_TEXT_POS"]), str(hour))
+        self.numerals(ma, pct(minute_len, self.g["G_TEXT_POS"]), "%02d" % minute)
 
-    hour_angle, minute_angle = (hour % 12) * 30, minute * 6
-    shaft(hour_angle, tier["hour_r"])
-    shaft(minute_angle, tier["minute_r"])
-
-    cap_r = tier["shaft_w"] // 2 + 3
-    d.ellipse([centre[0] - cap_r, centre[1] - cap_r, centre[0] + cap_r, centre[1] + cap_r],
-              fill=c["METAL_EDGE"])
-    d.ellipse([centre[0] - cap_r + 1, centre[1] - cap_r + 1,
-               centre[0] + cap_r - 1, centre[1] + cap_r - 1], fill=c["METAL"])
-    d.ellipse([centre[0] - 1, centre[1] - 1, centre[0] + 1, centre[1] + 1],
-              fill=c["DIAL_DEEP"])
-
-    plaque(hour_angle, tier["hour_r"], str(hour))
-    plaque(minute_angle, tier["minute_r"], "%02d" % minute)
-
-    # Anything a round screen would cut away is tinted, so clipping is obvious.
-    if is_round:
-        for y in range(h):
-            for x in range(w):
-                if (x - centre[0]) ** 2 + (y - centre[1]) ** 2 > radius ** 2:
-                    img.putpixel((x, y), (40, 40, 60))
-    return img
+        if self.round:  # tint what a round bezel would cut away
+            cx, cy = self.centre
+            rr = min(self.w, self.h) // 2
+            for y in range(self.h):
+                for x in range(self.w):
+                    if (x - cx) ** 2 + (y - cy) ** 2 > rr ** 2:
+                        self.img.putpixel((x, y), (40, 40, 60))
+        return self.img
 
 
 def main():
@@ -184,12 +214,10 @@ def main():
     minute = int(sys.argv[2]) if len(sys.argv) > 2 else 18
     outdir = Path(sys.argv[3]) if len(sys.argv) > 3 else ROOT / "preview"
     outdir.mkdir(parents=True, exist_ok=True)
-
-    tiers = load_tiers()
+    geom, digits = load_source()
     for platform in PLATFORMS:
-        img = render(platform, hour, minute, tiers)
         path = outdir / f"{platform}.png"
-        img.save(path)
+        Face(platform, geom, digits).render(hour, minute).save(path)
         print(path)
 
 
